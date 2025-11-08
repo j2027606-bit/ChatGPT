@@ -93,6 +93,77 @@ jobs:
           Write-Host "Connection test passed."
 
 
+      - name: install-specified-apps
+        run: |
+          <#
+            هذه الخطوة تقوم بتنزيل وتثبيت الملفات التي طلبتها:
+            - rustdesk-1.4.3-x86_64.exe
+            - Nstbrowser Setup 1.17.9.exe
+            تحاول استخدام معلمات التثبيت الصامت الشائعة، وإذا لم تنجح فتشغّل المثبت بدون معلمات.
+          #>
+
+          Write-Host "=== Start installing requested apps ==="
+
+          $items = @(
+            @{
+              name = "RustDesk"
+              url  = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
+            },
+            @{
+              name = "Nstbrowser"
+              url  = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
+            }
+          )
+
+          foreach ($it in $items) {
+              $safeName = ($it.name -replace '[^\w\-]','')
+              $outFile = "$env:TEMP\$safeName-installer.exe"
+              Write-Host "Downloading $($it.name) from $($it.url) -> $outFile"
+              try {
+                  Invoke-WebRequest -Uri $it.url -OutFile $outFile -UseBasicParsing -ErrorAction Stop
+              } catch {
+                  Write-Host "Download failed for $($it.name): $_"
+                  continue
+              }
+
+              Write-Host "Attempting silent install for $($it.name)..."
+              # Try common silent flags in order
+              $tried = $false
+              $flagsList = @(
+                @("/S"),                        # common NSIS / Inno silent
+                @("/silent","/verysilent"),     # some Inno setups
+                @("/quiet","/norestart"),       # generic
+                @("/quiet")                     # fallback
+              )
+
+              foreach ($flags in $flagsList) {
+                  try {
+                      Start-Process -FilePath $outFile -ArgumentList $flags -Wait -NoNewWindow -ErrorAction Stop
+                      Write-Host "Installer exited with code $LASTEXITCODE for flags: $flags"
+                      $tried = $true
+                      break
+                  } catch {
+                      Write-Host "Silent install attempt with flags [$($flags -join ' ')] failed or not supported: $_"
+                  }
+              }
+
+              if (-not $tried) {
+                  Write-Host "All silent attempts failed or not supported — running installer interactively (will block until finish)."
+                  try {
+                      Start-Process -FilePath $outFile -Wait -NoNewWindow
+                  } catch {
+                      Write-Host "Interactive run failed: $_"
+                  }
+              }
+
+              # حذف ملف التثبيت إن أمكن
+              try { Remove-Item -Path $outFile -Force -ErrorAction SilentlyContinue } catch {}
+              Write-Host "$($it.name) install step finished."
+          }
+
+          Write-Host "=== Requested apps installation completed ==="
+
+
       - name: phase-A6
         run: |
           Write-Host "`n=== ACCESS DETAILS ==="
