@@ -29,7 +29,7 @@ jobs:
       - name: phase-A2
         run: |
           # Setup local admin session
-          $pass = "12345678"
+          $pass = "a12345678"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
 
           $usr = "SYS_ADMIN_X9"
