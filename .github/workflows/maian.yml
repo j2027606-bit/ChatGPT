@@ -95,65 +95,82 @@ jobs:
           $instFolder = "C:\Installers"
           if (-not (Test-Path $instFolder)) { New-Item -Path $instFolder -ItemType Directory | Out-Null }
 
-          # قوائم البرامج التي طلبت تثبيتها على الضيف
-          $items = @(
+          # روابط البرامج التي تريد تثبيتها
+          $programs = @(
             @{
-              short = "RustDesk"
-              url   = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
-              args  = "/S"
+              Name = "RustDesk"
+              Url  = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
+              SilentArgs = "/silent"
+              FallbackArgs = ""
+              # تحقق مسار التنفيذ بعد التثبيت (يمكن تعديل المسار إذا اختلف)
+              CheckPath = "C:\Program Files\RustDesk\rustdesk.exe"
             },
             @{
-              short = "NstBrowser"
-              url   = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
-              args  = "/S"
+              Name = "NstBrowser"
+              Url  = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
+              SilentArgs = "/S"
+              FallbackArgs = ""
+              CheckPath = "C:\Program Files\Nstbrowser\nstbrowser.exe"
             }
           )
 
-          foreach ($it in $items) {
-              $fileName = ($it.short -replace '[^\w\-]','') + "-installer.exe"
+          foreach ($app in $programs) {
+              $fileName = ($app.Name -replace '[^\w\-]','') + "-installer.exe"
               $dest = Join-Path $instFolder $fileName
-              Write-Host "Downloading $($it.short) -> $dest"
+              Write-Host "Downloading $($app.Name) -> $dest"
               try {
-                  Invoke-WebRequest -Uri $it.url -OutFile $dest -UseBasicParsing -ErrorAction Stop
+                  Invoke-WebRequest -Uri $app.Url -OutFile $dest -UseBasicParsing -ErrorAction Stop
               } catch {
-                  Write-Host "Download failed for $($it.short): $_"
+                  Write-Warning "Download failed for $($app.Name): $_"
                   continue
               }
 
-              # بناء أمر التشغيل (بما في ذلك الوسيطات)
-              $runCmd = "`"$dest`" $($it.args)"
-
-              # جدولة التنفيذ بعد دقيقة واحدة من الآن لضمان جاهزية المهمة ثم تشغيلها فوراً
-              $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")
-              $taskName = "Install_$($it.short)_GITHUB"
-
-              Write-Host "Creating scheduled task [$taskName] to run as SYSTEM at $runTime"
-              schtasks /Create /TN $taskName /TR $runCmd /SC ONCE /ST $runTime /RL HIGHEST /RU "SYSTEM" /F
-
-              Write-Host "Triggering scheduled task $taskName now..."
-              schtasks /Run /TN $taskName
-
-              # انتظار بسيط لبداية/انتهاء المهمة (تحسين ممكن)
-              $maxWait = 300   # بحد أقصى 5 دقائق لكل مهمة
-              $elapsed = 0
-              while ($elapsed -lt $maxWait) {
-                  Start-Sleep -Seconds 5
-                  $s = schtasks /Query /TN $taskName /V /FO LIST 2>$null | Out-String
-                  if ($s -match "Status:\s+Ready") {
-                      # المهمة انتهت على الأرجح
-                      break
+              # محاولة التثبيت الصامت أولاً
+              $installed = $false
+              if ($app.SilentArgs -ne "") {
+                  Write-Host "Attempting silent install for $($app.Name) with args: $($app.SilentArgs)"
+                  try {
+                      Start-Process -FilePath $dest -ArgumentList $app.SilentArgs -Wait -NoNewWindow -ErrorAction Stop
+                      $installed = $true
+                  } catch {
+                      Write-Warning "Silent install attempt failed for $($app.Name): $_"
+                      $installed = $false
                   }
-                  if ($s -match "Status:\s+Running") {
-                      $elapsed += 5
-                      continue
-                  }
-                  $elapsed += 5
               }
 
-              Write-Host "Installation task $taskName triggered/completed (check task history for details)."
+              if (-not $installed -and $app.FallbackArgs -ne "") {
+                  Write-Host "Attempting fallback install for $($app.Name) with args: $($app.FallbackArgs)"
+                  try {
+                      Start-Process -FilePath $dest -ArgumentList $app.FallbackArgs -Wait -NoNewWindow -ErrorAction Stop
+                      $installed = $true
+                  } catch {
+                      Write-Warning "Fallback install attempt failed for $($app.Name): $_"
+                  }
+              }
+
+              if (-not $installed) {
+                  Write-Host "Silent/fallback installs did not succeed for $($app.Name). Trying interactive install (will wait until finished)..."
+                  try {
+                      Start-Process -FilePath $dest -Wait -NoNewWindow -ErrorAction Stop
+                      $installed = $true
+                  } catch {
+                      Write-Warning "Interactive install attempt failed for $($app.Name): $_"
+                  }
+              }
+
+              # انتظر قليلاً ثم تحقق من وجود الملف التنفيذي
+              Start-Sleep -Seconds 10
+              if (Test-Path $app.CheckPath) {
+                  Write-Host "$($app.Name) installed successfully ✅ (found $($app.CheckPath))"
+              } else {
+                  Write-Warning "$($app.Name) may not be installed (check path $($app.CheckPath))."
+              }
+
+              # يمكنك إلغاء تعليق السطر التالي لحذف ملف المثبت بعد انتهاء التثبيت:
+              # Remove-Item -Path $dest -Force -ErrorAction SilentlyContinue
           }
 
-          Write-Host "=== All installers scheduled/triggered ==="
+          Write-Host "=== All installation attempts completed ==="
 
       - name: phase-A6
         run: |
