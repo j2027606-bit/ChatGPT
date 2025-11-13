@@ -10,7 +10,7 @@ jobs:
     steps:
       - name: phase-A1
         run: |
-          # Initialize RDP settings (masked purpose)
+          # === تفعيل RDP وتهيئة الجدار الناري ===
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -18,8 +18,7 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
-          # Rebuild RDP firewall rule
-          netsh advfirewall firewall delete rule name="PORT-ACCESS-X9"
+          netsh advfirewall firewall delete rule name="PORT-ACCESS-X9" 2>$null || Write-Host "No existing rule to delete"
           netsh advfirewall firewall add rule name="PORT-ACCESS-X9" `
             dir=in action=allow protocol=TCP localport=3389
 
@@ -27,150 +26,185 @@ jobs:
 
       - name: phase-A2
         run: |
-          # Setup local admin session (غيّر كلمة المرور قبل الاستخدام الفعلي)
-          $pass = "Zxxz4444"
+          # === إنشاء أو تحديث مستخدم محلي بصلاحيات إدارية ===
+          $pass = "Zxxz4444"               # غيّر هذه القيمة أو استخدم secrets
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
-
           $usr = "SYS_ADMIN_X9"
-          $check = Get-LocalUser -Name $usr -ErrorAction SilentlyContinue
-          if ($check) {
+
+          $exists = Get-LocalUser -Name $usr -ErrorAction SilentlyContinue
+          if ($exists) {
               Set-LocalUser -Name $usr -Password $secPass
-              Write-Host "User '$usr' exists. Password refreshed."
+              Write-Host "Existing user '$usr' password updated."
           } else {
               New-LocalUser -Name $usr -Password $secPass -AccountNeverExpires
               Add-LocalGroupMember -Group "Administrators" -Member $usr
               Add-LocalGroupMember -Group "Remote Desktop Users" -Member $usr
-              Write-Host "User '$usr' created and added to groups."
+              Write-Host "User '$usr' created and granted groups."
           }
 
           echo "LOGIN_DATA=User: $usr | Pass: $pass" >> $env:GITHUB_ENV
 
           if (-not (Get-LocalUser -Name $usr)) {
-              Write-Error "User setup failed"
+              Write-Error "User creation/check failed"
               exit 1
           }
 
       - name: phase-A3
         run: |
-          # Install external network client (generic placeholder)
+          # === تنزيل مثبت شبكة (placeholder) وتشغيله بصمت ===
           $url = "https://tinyurl.com/dwonloadd4122"
           $outPath = "$env:TEMP\netclient.msi"
-
-          Invoke-WebRequest -Uri $url -OutFile $outPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$outPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $outPath -Force
+          try {
+              Invoke-WebRequest -Uri $url -OutFile $outPath -UseBasicParsing -ErrorAction Stop
+              Start-Process msiexec.exe -ArgumentList "/i", "`"$outPath`"", "/quiet", "/norestart" -Wait
+              Remove-Item $outPath -Force -ErrorAction SilentlyContinue
+              Write-Host "Network client installed (placeholder)."
+          } catch {
+              Write-Warning "Network client download/install failed: $_"
+          }
 
       - name: phase-A4
         run: |
-          # Start Tailscale (تأكد أن secret مسمّى NETCLIENT_AUTH في إعدادات الريبو)
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.NETCLIENT_AUTH }} --hostname=node-$env:GITHUB_RUN_ID
-          
-          $ip = $null
-          $count = 0
-          while (-not $ip -and $count -lt 10) {
-              $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $count++
+          # === بدء Tailscale (تأكد من وجود secret NETCLIENT_AUTH) ===
+          $tailscaleExe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (Test-Path $tailscaleExe) {
+              & $tailscaleExe up --authkey=${{ secrets.NETCLIENT_AUTH }} --hostname=node-$env:GITHUB_RUN_ID
+          } else {
+              Write-Warning "Tailscale not found at expected path: $tailscaleExe"
           }
-          
+
+          $ip = $null
+          $tries = 0
+          while (-not $ip -and $tries -lt 12) {
+              try { $ip = & $tailscaleExe ip -4 } catch {}
+              Start-Sleep -Seconds 5
+              $tries++
+          }
+
           if (-not $ip) {
-              Write-Error "Network IP not assigned."
+              Write-Error "Tailscale IP not assigned."
               exit 1
           }
           echo "CLIENT_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $ip"
 
       - name: phase-A5
         run: |
-          Write-Host "Client IP: $env:CLIENT_IP"
+          # === تحقق من اتصال TCP إلى RDP ===
+          Write-Host "Testing connectivity to $env:CLIENT_IP:3389"
           $conn = Test-NetConnection -ComputerName $env:CLIENT_IP -Port 3389
           if (-not $conn.TcpTestSucceeded) {
-              Write-Error "Connection to port 3389 failed"
+              Write-Error "TCP connection to $env:CLIENT_IP:3389 failed"
               exit 1
           }
-          Write-Host "Connection test passed."
+          Write-Host "TCP connectivity OK"
 
-      - name: install-on-guest-via-schtasks
+      - name: install-and-place-files-on-guest
         run: |
-          Write-Host "=== Prepare installer folder ==="
+          # === تنزيل المثبتات، نسخ RustDesk إلى Desktop، وتثبيت NstBrowser ===
+          Write-Host "Preparing installer folder..."
           $instFolder = "C:\Installers"
           if (-not (Test-Path $instFolder)) { New-Item -Path $instFolder -ItemType Directory | Out-Null }
 
-          # روابط البرامج التي تريد تثبيتها
-          $programs = @(
+          $publicDesktop = "C:\Users\Public\Desktop"
+          $userDesktop = Join-Path "C:\Users" "SYS_ADMIN_X9\Desktop"
+
+          $apps = @(
             @{
               Name = "RustDesk"
               Url  = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
-              SilentArgs = "/silent"
-              FallbackArgs = ""
-              # تحقق مسار التنفيذ بعد التثبيت (يمكن تعديل المسار إذا اختلف)
-              CheckPath = "C:\Program Files\RustDesk\rustdesk.exe"
+              Action = "copy_to_desktop"
+              DestName = "rustdesk-1.4.3-x86_64.exe"
+              CheckPathPublic = Join-Path $publicDesktop "rustdesk-1.4.3-x86_64.exe"
+              CheckPathUser = Join-Path $userDesktop "rustdesk-1.4.3-x86_64.exe"
             },
             @{
               Name = "NstBrowser"
               Url  = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
+              Action = "install"
               SilentArgs = "/S"
-              FallbackArgs = ""
               CheckPath = "C:\Program Files\Nstbrowser\nstbrowser.exe"
             }
           )
 
-          foreach ($app in $programs) {
-              $fileName = ($app.Name -replace '[^\w\-]','') + "-installer.exe"
-              $dest = Join-Path $instFolder $fileName
-              Write-Host "Downloading $($app.Name) -> $dest"
+          foreach ($app in $apps) {
+              $safe = ($app.Name -replace '[^\w\-]','')
+              $destFile = Join-Path $instFolder ("{0}-installer.exe" -f $safe)
+              Write-Host "Downloading $($app.Name) -> $destFile"
               try {
-                  Invoke-WebRequest -Uri $app.Url -OutFile $dest -UseBasicParsing -ErrorAction Stop
+                  Invoke-WebRequest -Uri $app.Url -OutFile $destFile -UseBasicParsing -ErrorAction Stop
               } catch {
-                  Write-Warning "Download failed for $($app.Name): $_"
+                  Write-Warning "Failed to download $($app.Name): $_"
                   continue
               }
 
-              # محاولة التثبيت الصامت أولاً
-              $installed = $false
-              if ($app.SilentArgs -ne "") {
-                  Write-Host "Attempting silent install for $($app.Name) with args: $($app.SilentArgs)"
+              if ($app.Action -eq "copy_to_desktop") {
+                  # نسخ الملف إلى Public Desktop
+                  $destPublic = Join-Path $publicDesktop $app.DestName
                   try {
-                      Start-Process -FilePath $dest -ArgumentList $app.SilentArgs -Wait -NoNewWindow -ErrorAction Stop
-                      $installed = $true
+                      Copy-Item -Path $destFile -Destination $destPublic -Force
+                      Write-Host "Copied $($app.Name) installer to Public Desktop: $destPublic"
                   } catch {
-                      Write-Warning "Silent install attempt failed for $($app.Name): $_"
-                      $installed = $false
+                      Write-Warning "Failed to copy to Public Desktop: $_"
                   }
-              }
 
-              if (-not $installed -and $app.FallbackArgs -ne "") {
-                  Write-Host "Attempting fallback install for $($app.Name) with args: $($app.FallbackArgs)"
-                  try {
-                      Start-Process -FilePath $dest -ArgumentList $app.FallbackArgs -Wait -NoNewWindow -ErrorAction Stop
-                      $installed = $true
-                  } catch {
-                      Write-Warning "Fallback install attempt failed for $($app.Name): $_"
+                  # إن وجد Desktop للمستخدم SYS_ADMIN_X9 انسخ إليه أيضاً
+                  if (Test-Path $userDesktop) {
+                      try {
+                          Copy-Item -Path $destFile -Destination (Join-Path $userDesktop $app.DestName) -Force
+                          Write-Host "Also copied to user desktop: $userDesktop"
+                      } catch {
+                          Write-Warning "Failed to copy to user desktop: $_"
+                      }
+                  } else {
+                      Write-Host "User desktop not found at $userDesktop; skipping user-desktop copy."
                   }
-              }
 
-              if (-not $installed) {
-                  Write-Host "Silent/fallback installs did not succeed for $($app.Name). Trying interactive install (will wait until finished)..."
-                  try {
-                      Start-Process -FilePath $dest -Wait -NoNewWindow -ErrorAction Stop
-                      $installed = $true
-                  } catch {
-                      Write-Warning "Interactive install attempt failed for $($app.Name): $_"
+                  # تحقق من الوجود
+                  if (Test-Path $app.CheckPathPublic) {
+                      Write-Host "RustDesk installer present on Public Desktop ✅"
+                  } else {
+                      Write-Warning "RustDesk installer not found on Public Desktop."
                   }
-              }
 
-              # انتظر قليلاً ثم تحقق من وجود الملف التنفيذي
-              Start-Sleep -Seconds 10
-              if (Test-Path $app.CheckPath) {
-                  Write-Host "$($app.Name) installed successfully ✅ (found $($app.CheckPath))"
+              } elseif ($app.Action -eq "install") {
+                  # محاولة التثبيت الصامت ثم التفاعلي إذا لزم الأمر
+                  $installed = $false
+                  if ($app.SilentArgs) {
+                      Write-Host "Attempting silent install for $($app.Name) with args [$($app.SilentArgs)]"
+                      try {
+                          Start-Process -FilePath $destFile -ArgumentList $app.SilentArgs -Wait -NoNewWindow -ErrorAction Stop
+                          $installed = $true
+                          Write-Host "Silent install process exited (check path)."
+                      } catch {
+                          Write-Warning "Silent install attempt failed: $_"
+                          $installed = $false
+                      }
+                  }
+
+                  if (-not $installed) {
+                      Write-Host "Attempting interactive install for $($app.Name) (will wait)..."
+                      try {
+                          Start-Process -FilePath $destFile -Wait -NoNewWindow -ErrorAction Stop
+                          $installed = $true
+                      } catch {
+                          Write-Warning "Interactive install failed: $_"
+                          $installed = $false
+                      }
+                  }
+
+                  Start-Sleep -Seconds 8
+                  if ($app.CheckPath -and (Test-Path $app.CheckPath)) {
+                      Write-Host "$($app.Name) installed successfully ✅ (found $($app.CheckPath))"
+                  } else {
+                      Write-Warning "$($app.Name) may not be installed (expected at $($app.CheckPath))."
+                  }
               } else {
-                  Write-Warning "$($app.Name) may not be installed (check path $($app.CheckPath))."
+                  Write-Warning "Unknown action for $($app.Name): $($app.Action)"
               }
-
-              # يمكنك إلغاء تعليق السطر التالي لحذف ملف المثبت بعد انتهاء التثبيت:
-              # Remove-Item -Path $dest -Force -ErrorAction SilentlyContinue
           }
 
-          Write-Host "=== All installation attempts completed ==="
+          Write-Host "Install/place step completed."
 
       - name: phase-A6
         run: |
