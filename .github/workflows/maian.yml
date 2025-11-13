@@ -25,10 +25,9 @@ jobs:
 
           Restart-Service -Name TermService -Force
 
-
       - name: phase-A2
         run: |
-          # Setup local admin session
+          # Setup local admin session (غيّر كلمة المرور قبل الاستخدام الفعلي)
           $pass = "Zxxz4444"
           $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
 
@@ -51,10 +50,9 @@ jobs:
               exit 1
           }
 
-
       - name: phase-A3
         run: |
-          # Install external network client (generic description)
+          # Install external network client (generic placeholder)
           $url = "https://tinyurl.com/dwonloadd4122"
           $outPath = "$env:TEMP\netclient.msi"
 
@@ -62,9 +60,9 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$outPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $outPath -Force
 
-
       - name: phase-A4
         run: |
+          # Start Tailscale (تأكد أن secret مسمّى NETCLIENT_AUTH في إعدادات الريبو)
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.NETCLIENT_AUTH }} --hostname=node-$env:GITHUB_RUN_ID
           
           $ip = $null
@@ -81,7 +79,6 @@ jobs:
           }
           echo "CLIENT_IP=$ip" >> $env:GITHUB_ENV
 
-
       - name: phase-A5
         run: |
           Write-Host "Client IP: $env:CLIENT_IP"
@@ -92,77 +89,71 @@ jobs:
           }
           Write-Host "Connection test passed."
 
-
-      - name: install-specified-apps
+      - name: install-on-guest-via-schtasks
         run: |
-          <#
-            هذه الخطوة تقوم بتنزيل وتثبيت الملفات التي طلبتها:
-            - rustdesk-1.4.3-x86_64.exe
-            - Nstbrowser Setup 1.17.9.exe
-            تحاول استخدام معلمات التثبيت الصامت الشائعة، وإذا لم تنجح فتشغّل المثبت بدون معلمات.
-          #>
+          Write-Host "=== Prepare installer folder ==="
+          $instFolder = "C:\Installers"
+          if (-not (Test-Path $instFolder)) { New-Item -Path $instFolder -ItemType Directory | Out-Null }
 
-          Write-Host "=== Start installing requested apps ==="
-
+          # قوائم البرامج التي طلبت تثبيتها على الضيف
           $items = @(
             @{
-              name = "RustDesk"
-              url  = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
+              short = "RustDesk"
+              url   = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"
+              args  = "/S"
             },
             @{
-              name = "Nstbrowser"
-              url  = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
+              short = "NstBrowser"
+              url   = "https://assets.nstbrowser.io/prod/agent/x64/Nstbrowser%20Setup%201.17.9.exe"
+              args  = "/S"
             }
           )
 
           foreach ($it in $items) {
-              $safeName = ($it.name -replace '[^\w\-]','')
-              $outFile = "$env:TEMP\$safeName-installer.exe"
-              Write-Host "Downloading $($it.name) from $($it.url) -> $outFile"
+              $fileName = ($it.short -replace '[^\w\-]','') + "-installer.exe"
+              $dest = Join-Path $instFolder $fileName
+              Write-Host "Downloading $($it.short) -> $dest"
               try {
-                  Invoke-WebRequest -Uri $it.url -OutFile $outFile -UseBasicParsing -ErrorAction Stop
+                  Invoke-WebRequest -Uri $it.url -OutFile $dest -UseBasicParsing -ErrorAction Stop
               } catch {
-                  Write-Host "Download failed for $($it.name): $_"
+                  Write-Host "Download failed for $($it.short): $_"
                   continue
               }
 
-              Write-Host "Attempting silent install for $($it.name)..."
-              # Try common silent flags in order
-              $tried = $false
-              $flagsList = @(
-                @("/S"),                        # common NSIS / Inno silent
-                @("/silent","/verysilent"),     # some Inno setups
-                @("/quiet","/norestart"),       # generic
-                @("/quiet")                     # fallback
-              )
+              # بناء أمر التشغيل (بما في ذلك الوسيطات)
+              $runCmd = "`"$dest`" $($it.args)"
 
-              foreach ($flags in $flagsList) {
-                  try {
-                      Start-Process -FilePath $outFile -ArgumentList $flags -Wait -NoNewWindow -ErrorAction Stop
-                      Write-Host "Installer exited with code $LASTEXITCODE for flags: $flags"
-                      $tried = $true
+              # جدولة التنفيذ بعد دقيقة واحدة من الآن لضمان جاهزية المهمة ثم تشغيلها فوراً
+              $runTime = (Get-Date).AddMinutes(1).ToString("HH:mm")
+              $taskName = "Install_$($it.short)_GITHUB"
+
+              Write-Host "Creating scheduled task [$taskName] to run as SYSTEM at $runTime"
+              schtasks /Create /TN $taskName /TR $runCmd /SC ONCE /ST $runTime /RL HIGHEST /RU "SYSTEM" /F
+
+              Write-Host "Triggering scheduled task $taskName now..."
+              schtasks /Run /TN $taskName
+
+              # انتظار بسيط لبداية/انتهاء المهمة (تحسين ممكن)
+              $maxWait = 300   # بحد أقصى 5 دقائق لكل مهمة
+              $elapsed = 0
+              while ($elapsed -lt $maxWait) {
+                  Start-Sleep -Seconds 5
+                  $s = schtasks /Query /TN $taskName /V /FO LIST 2>$null | Out-String
+                  if ($s -match "Status:\s+Ready") {
+                      # المهمة انتهت على الأرجح
                       break
-                  } catch {
-                      Write-Host "Silent install attempt with flags [$($flags -join ' ')] failed or not supported: $_"
                   }
+                  if ($s -match "Status:\s+Running") {
+                      $elapsed += 5
+                      continue
+                  }
+                  $elapsed += 5
               }
 
-              if (-not $tried) {
-                  Write-Host "All silent attempts failed or not supported — running installer interactively (will block until finish)."
-                  try {
-                      Start-Process -FilePath $outFile -Wait -NoNewWindow
-                  } catch {
-                      Write-Host "Interactive run failed: $_"
-                  }
-              }
-
-              # حذف ملف التثبيت إن أمكن
-              try { Remove-Item -Path $outFile -Force -ErrorAction SilentlyContinue } catch {}
-              Write-Host "$($it.name) install step finished."
+              Write-Host "Installation task $taskName triggered/completed (check task history for details)."
           }
 
-          Write-Host "=== Requested apps installation completed ==="
-
+          Write-Host "=== All installers scheduled/triggered ==="
 
       - name: phase-A6
         run: |
